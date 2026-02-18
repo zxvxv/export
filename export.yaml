@@ -1,9 +1,12 @@
 blueprint:
-  name: "IntegraSoft Shadow-PV v1.01 (Ghost Export)"
+  name: "IntegraSoft Shadow-PV v1.02 (Ghost Export PRO)"
   description: >
-    🚀 AUTOMATYKA HYBRYDOWA: IntegraSoft Shadow-PV v1.01 🚀
+    🚀 AUTOMATYKA HYBRYDOWA: IntegraSoft Shadow-PV v1.02 🚀
     
     HISTORIA WERSJI:
+    v1.02: Wprowadzenie logiki PRO. Sumowanie zysków z dachu (PV) oraz mikroinwerterów (GEN).
+           Dynamiczne dodawanie sumarycznego zużycia domu (Load + Grid-CT) do limitu eksportu.
+           Zmiana mnożnika na pole wprowadzane ręcznie z dokładnością 0.01 (max 2.50).
     v1.01: Zastąpienie zewnętrznej encji słońca wbudowaną, twardą matrycą 12-miesięczną.
            Kod w 100% niezależny od zewnętrznych usług pogodowych.
            Dodano url repozytorium do szybkiego importu.
@@ -12,7 +15,7 @@ blueprint:
     JAK UŻYWAĆ:
     1. Wybierz Profil zgodny z resztą instalacji.
     2. Wpisz Zgłoszoną Moc PV do OSD (np. 6000 W).
-    3. Ustal Mnożnik Agresywności (np. 1.5 dopompuje +50% z magazynu).
+    3. Wpisz Mnożnik Agresywności (np. 1.50).
   
   source_url: https://github.com/zxvxv/export/blob/main/export.yaml
   
@@ -47,9 +50,9 @@ blueprint:
 
     in_multiplier:
       name: "4. 🚀 Mnożnik Agresywności (Ghost Factor)"
-      description: "Jak bardzo podbijamy produkcję? (np. 1.5 = symulacja słońca o 50% mocniejszego. Magazyn dopłaca resztę)."
-      default: 1.5
-      selector: { number: { min: 1.0, max: 5.0, step: 0.1 } }
+      description: "Jak bardzo podbijamy produkcję? (Zakres: 1.00 - 2.50). Np. 1.50 oznacza eksport 150% realnej produkcji słonecznej."
+      default: 1.50
+      selector: { number: { min: 1.00, max: 2.50, step: 0.01, mode: box } }
 
 mode: restart
 
@@ -69,6 +72,10 @@ variables:
   
   # Archiwum encji "Lewa Ręka":
   # - Aktualne PV: sensor.deye_inverter_pv_power
+  # - Mikroinwertery (GEN): sensor.deye_inverter_generator_power_total
+  # - Zużycie dom (Load): sensor.deye_inverter_load_power
+  # - Grid (Inverter): sensor.deye_inverter_grid_power
+  # - Zewnętrzne CT: sensor.deye_inverter_external_ct_power
   # - Max Sell: number.deye_inverter_max_sell_power
   # - Switch Sell: switch.deye_inverter_solar_sell
 
@@ -77,6 +84,34 @@ variables:
     {% elif profile == 'dashboard' %} sensor.{{ prefix }}_pv_power
     {% elif profile == 'sun12k' %} sensor.{{ prefix }}_dc_power_total
     {% else %} sensor.{{ prefix }}_pv_power
+    {% endif %}
+
+  gen_power_ent: >
+    {% if profile == 'oze4home' %} sensor.{{ prefix }}_generator_power_total
+    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_generator_power_total
+    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_gen_power_total
+    {% else %} sensor.{{ prefix }}_generator_power_total
+    {% endif %}
+
+  load_power_ent: >
+    {% if profile == 'oze4home' %} sensor.{{ prefix }}_load_power
+    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_load_power
+    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_load_power
+    {% else %} sensor.{{ prefix }}_load_power
+    {% endif %}
+
+  grid_power_ent: >
+    {% if profile == 'oze4home' %} sensor.{{ prefix }}_grid_power
+    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_grid_power
+    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_grid_power
+    {% else %} sensor.{{ prefix }}_grid_power
+    {% endif %}
+
+  ct_power_ent: >
+    {% if profile == 'oze4home' %} sensor.{{ prefix }}_external_ct_power
+    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_external_ct_power
+    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_external_ct_power
+    {% else %} sensor.{{ prefix }}_external_ct_power
     {% endif %}
 
   max_sell_ent: >
@@ -97,10 +132,20 @@ variables:
   # MATEMATYKA GHOST-EXPORT I TWARDA BAZA GODZINOWA OSD
   # ==========================================================
   
-  # 1. Odczyt produkcji PV
-  current_pv: "{{ states(pv_power_ent) | float(0) }}"
+  # 1. Odczyt produkcji PV (Dach + Mikroinwertery)
+  pv_val: "{{ states(pv_power_ent) | float(0) }}"
+  gen_val: "{{ states(gen_power_ent) | float(0) }}"
+  total_pv: "{{ pv_val + gen_val }}"
   
-  # 2. Twarda matryca godzinowa (Bezpiecznik Astronomiczny OSD)
+  # 2. Odczyt zużycia domu (Zapas na utrzymanie eksportu)
+  # Obliczamy różnicę między tym co falownik wystawia na Grid, a tym co wychodzi przez CT.
+  load_val: "{{ states(load_power_ent) | float(0) }}"
+  grid_val: "{{ states(grid_power_ent) | float(0) }}"
+  ct_val: "{{ states(ct_power_ent) | float(0) }}"
+  home_on_grid: "{{ grid_val - ct_val }}"
+  total_home_load: "{{ load_val + (home_on_grid if home_on_grid > 0 else 0) }}"
+
+  # 3. Twarda matryca godzinowa (Bezpiecznik Astronomiczny OSD)
   is_safe_time: >
     {% set m = now().month %}
     {% set t = now().strftime('%H:%M') %}
@@ -118,19 +163,21 @@ variables:
     {% elif m == 12 %}{{ '08:00' <= t <= '15:00' }}
     {% else %}false{% endif %}
   
-  # 3. Wyliczenie teoretyczne (aktualne słońce * mnożnik sztucznego słońca)
-  calculated_target: "{{ (current_pv * (multiplier | float)) | int }}"
+  # 4. Wyliczenie docelowego limitu dla falownika (Słońce * mnożnik + Dom)
+  calculated_target: "{{ ((total_pv * (multiplier | float)) + total_home_load) | int }}"
   
-  # 4. Zastosowanie "szklanego sufitu" (P_MAX zgłoszone do energetyki)
+  # 5. Zastosowanie "szklanego sufitu" (P_MAX zgłoszone do energetyki + dom)
+  # Sufit pozwala inwerterowi na max eksport (p_max) ORAZ pokrycie domu.
+  ceiling: "{{ (p_max | int) + (total_home_load | int) }}"
   final_target: >
-    {% if calculated_target > (p_max | int) %}
-      {{ p_max | int }}
+    {% if calculated_target > ceiling %}
+      {{ ceiling }}
     {% else %}
       {{ calculated_target }}
     {% endif %}
 
 trigger:
-  # 1. HEARTBEAT (Bicie Serca i Wygładzanie) - co 2 minuty podąża za zmianą nasłonecznienia
+  # 1. HEARTBEAT (Bicie Serca i Wygładzanie) - co 2 minuty
   - platform: time_pattern
     minutes: "/2"
   # 2. Bezpieczny start po restarcie HA
@@ -138,40 +185,39 @@ trigger:
     event: start
 
 action:
-  # 0. OCHRONA (Safety Check)
+  # 0. OCHRONA (Safety Check) - Zatrzymanie przy braku komunikacji
   - if:
       - condition: template
         value_template: >
           {{ states(pv_power_ent) in ['unknown', 'unavailable', 'none'] or 
              states(max_sell_ent) in ['unknown', 'unavailable', 'none'] }}
     then:
-      - stop: "Błąd krytyczny: Brak encji PV lub Max Sell. Automatyzacja Shadow-PV zatrzymana."
+      - stop: "Błąd krytyczny: Brak komunikacji z falownikiem Deye. Moduł zatrzymany."
 
   # GŁÓWNA LOGIKA DECYZYJNA SHADOW-PV
   - choose:
-      # SCENARIUSZ 1: Jesteśmy w bezpiecznym oknie czasowym i mamy realną produkcję z PV (>100W)
+      # SCENARIUSZ 1: Bezpieczne okno czasowe i realna produkcja (>100W)
       - conditions:
           - condition: template
-            value_template: "{{ is_safe_time == 'True' and current_pv > 100 }}"
+            value_template: "{{ is_safe_time == 'True' and total_pv > 100 }}"
         sequence:
-          # A: Włącz pozwolenie na sprzedaż, jeśli było wyłączone
+          # A: Włączenie opcji eksportu (Solar Sell)
           - action: switch.turn_on
             target:
               entity_id: "{{ solar_sell_switch }}"
           
-          # B: Ustaw dynamicznie wyliczony limit eksportu
+          # B: Dynamiczne ustawienie limitu Max Sell Power
           - action: number.set_value
             target:
               entity_id: "{{ max_sell_ent }}"
             data:
               value: "{{ final_target }}"
 
-      # SCENARIUSZ 2: Poza bezpiecznym oknem czasowym LUB brak realnej produkcji słońca
+      # SCENARIUSZ 2: Poza bezpiecznym oknem LUB brak słońca (Odcięcie eksportu)
       - conditions:
           - condition: template
-            value_template: "{{ is_safe_time == 'False' or current_pv <= 100 }}"
+            value_template: "{{ is_safe_time == 'False' or total_pv <= 100 }}"
         sequence:
-          # Zabezpieczenie zerowe - wyłączamy sprzedaż i zerujemy licznik Max Sell
           - action: number.set_value
             target:
               entity_id: "{{ max_sell_ent }}"
