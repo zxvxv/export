@@ -1,19 +1,12 @@
 blueprint:
-  name: "IntegraSoft Shadow-PV PRO v2.00 (Cloud-Breaker & RCE)"
+  name: "IntegraSoft Shadow-PV PRO v2.05 (Smart-Cierpliwość)"
   description: >
-    🚀 AUTOMATYKA HYBRYDOWA: IntegraSoft Shadow-PV PRO v2.00 🚀
+    🚀 AUTOMATYKA HYBRYDOWA: IntegraSoft Shadow-PV PRO v2.05 🚀
     
-    HISTORIA WERSJI:
-    v2.00: Ogromna aktualizacja modułu eksportu. Dodano:
-           - Integrację z rynkiem RCE (PSE).
-           - Blokadę nieopłacalnej sprzedaży (magazynowanie energii przy niskich stawkach).
-           - Zawór bezpieczeństwa SOC 100% (odblokowanie zrzutu zapobiegające clippingowi).
-           - Moduł "Cloud-Breaker" (symulacja wyjścia słońca zza chmur w najdroższych okienkach).
-           - Utrzymano twardą 12-miesięczną bazę okien dziennych.
-    v1.02: Wprowadzenie logiki PRO (Sumowanie dom + PV + mikroinwertery).
-    v1.01: Twarda matryca 12-miesięczna.
-    
-    JAK UŻYWAĆ: Skonfiguruj inputy i upewnij się, że posiadasz integrację PSE.
+    v2.05: Dodano logikę "Cierpliwego Sprzedawcy". 
+           System oszczędza baterię na najdroższe okno PSE.
+           Poza szczytem sprzedaje tylko nadwyżki ze słońca (bez drenażu magazynu).
+    v2.00: Cloud-Breaker, RCE PSE, SOC 100% Safety Valve.
   
   source_url: https://github.com/zxvxv/export/blob/main/export.yaml
   
@@ -22,35 +15,28 @@ blueprint:
     in_dev_prefix:
       name: "1. 🔹 Prefiks Urządzenia"
       default: "deye_inverter"
-
     in_standard_profile:
       name: "2. 📚 Standard Integracji (Profil)"
       default: "lewa_reka"
       selector:
         select:
           options:
-            - { label: "Lewa-Reka (Domyślny)", value: "lewa_reka" }
-            - { label: "OZE4HOME (ESP32)", value: "oze4home" }
-            - { label: "Dashboard / Sunsynk", value: "dashboard" }
-            - { label: "SUN-12K (Local/Time) - Solarman", value: "sun12k" }
-
+            - { label: "Lewa-Reka", value: "lewa_reka" }
+            - { label: "OZE4HOME", value: "oze4home" }
+            - { label: "Dashboard", value: "dashboard" }
+            - { label: "SUN-12K", value: "sun12k" }
     in_p_max:
-      name: "3. 🔴 Zgłoszona moc instalacji PV (Waty)"
-      description: "Twój szklany sufit dla OSD."
+      name: "3. 🔴 Zgłoszona moc PV (Waty)"
       default: 6000
-      selector: { number: { min: 1000, max: 50000, mode: box, unit_of_measurement: "W" } }
-
+      selector: { number: { min: 1000, max: 50000, mode: box } }
     in_multiplier:
-      name: "4. 🚀 Mnożnik Agresywności (Ghost Factor)"
-      description: "Zakres 1.00 - 2.50. np. 1.50 = 150% realnej produkcji."
+      name: "4. 🚀 Mnożnik Agresywności (Szczyt RCE)"
       default: 1.50
       selector: { number: { min: 1.00, max: 2.50, step: 0.01, mode: box } }
-
     in_min_price:
       name: "5. 💰 Próg opłacalności RCE (zł)"
-      description: "Sprzedaż poniżej tej kwoty jest blokowana (prąd trafia do magazynu)."
       default: 0.20
-      selector: { number: { min: -1.00, max: 5.00, step: 0.01, mode: box, unit_of_measurement: "PLN" } }
+      selector: { number: { min: -1.00, max: 5.00, step: 0.01, mode: box } }
 
 mode: restart
 
@@ -62,221 +48,68 @@ variables:
   multiplier: !input in_multiplier
   min_price: !input in_min_price
   
-  # ==========================================================
-  # ARCHIWUM ENCJI LEWA RĘKA:
-  # Aktualne PV: sensor.deye_inverter_pv_power
-  # Mikroinwertery: sensor.deye_inverter_generator_power_total
-  # Zużycie Load: sensor.deye_inverter_load_power
-  # Zewnętrzne CT: sensor.deye_inverter_external_ct_power
-  # Grid: sensor.deye_inverter_grid_power
-  # Max Sell: number.deye_inverter_max_sell_power
-  # Switch Sell: switch.deye_inverter_solar_sell
-  # Bateria SOC: sensor.deye_inverter_battery_bms_soc
-  # RCE Cena: sensor.rce_pse_cena
-  # RCE Okno: sensor.rce_pse_konfigurowalne_najdrozsze_okno_dzisiaj
-  # TOU 1-6 (Przełączniki)
-  # ==========================================================
-  
-  pv_power_ent: >
-    {% if profile == 'oze4home' %} sensor.{{ prefix }}_pv_power
-    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_pv_power
-    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_dc_power_total
-    {% else %} sensor.{{ prefix }}_pv_power
-    {% endif %}
+  # --- Mapowanie Encji (Pełny Format) ---
+  pv_power_ent: "{% if profile == 'sun12k' %} sensor.{{ prefix }}_dc_power_total {% else %} sensor.{{ prefix }}_pv_power {% endif %}"
+  gen_power_ent: "{% if profile == 'sun12k' %} sensor.{{ prefix }}_gen_power_total {% else %} sensor.{{ prefix }}_generator_power_total {% endif %}"
+  load_power_ent: "sensor.{{ prefix }}_load_power"
+  grid_power_ent: "sensor.{{ prefix }}_grid_power"
+  ct_power_ent: "sensor.{{ prefix }}_external_ct_power"
+  max_sell_ent: "number.{{ prefix }}_max_sell_power"
+  solar_sell_switch: "switch.{{ prefix }}_solar_sell"
+  battery_soc_ent: "{% if profile == 'oze4home' %} sensor.{{ prefix }}_battery_bms_soc {% else %} sensor.{{ prefix }}_battery_soc {% endif %}"
 
-  gen_power_ent: >
-    {% if profile == 'oze4home' %} sensor.{{ prefix }}_generator_power_total
-    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_generator_power_total
-    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_gen_power_total
-    {% else %} sensor.{{ prefix }}_generator_power_total
-    {% endif %}
-
-  load_power_ent: >
-    {% if profile == 'oze4home' %} sensor.{{ prefix }}_load_power
-    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_load_power
-    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_load_power
-    {% else %} sensor.{{ prefix }}_load_power
-    {% endif %}
-
-  grid_power_ent: >
-    {% if profile == 'oze4home' %} sensor.{{ prefix }}_grid_power
-    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_grid_power
-    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_grid_power
-    {% else %} sensor.{{ prefix }}_grid_power
-    {% endif %}
-
-  ct_power_ent: >
-    {% if profile == 'oze4home' %} sensor.{{ prefix }}_external_ct_power
-    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_external_ct_power
-    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_external_ct_power
-    {% else %} sensor.{{ prefix }}_external_ct_power
-    {% endif %}
-
-  max_sell_ent: >
-    {% if profile == 'oze4home' %} number.{{ prefix }}_max_sell_power
-    {% elif profile == 'dashboard' %} number.{{ prefix }}_max_sell_power
-    {% elif profile == 'sun12k' %} number.{{ prefix }}_max_sell_power
-    {% else %} number.{{ prefix }}_max_sell_power
-    {% endif %}
-
-  solar_sell_switch: >
-    {% if profile == 'oze4home' %} switch.{{ prefix }}_solar_sell
-    {% elif profile == 'dashboard' %} switch.{{ prefix }}_solar_sell
-    {% elif profile == 'sun12k' %} switch.{{ prefix }}_solar_sell
-    {% else %} switch.{{ prefix }}_solar_sell
-    {% endif %}
-
-  battery_soc_ent: >
-    {% if profile == 'oze4home' %} sensor.{{ prefix }}_battery_bms_soc
-    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_battery_soc
-    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_battery_soc
-    {% else %} sensor.{{ prefix }}_battery_bms_soc
-    {% endif %}
-
-  # Sekcje variables dla TOU 1-6 muszą zawsze zawierać osobne definicje (Zgodność z architekturą v1.21)
-  tou_1_sell: >
-    {% if profile == 'oze4home' %} switch.{{ prefix }}_time_of_use_1_sell
-    {% elif profile == 'dashboard' %} switch.{{ prefix }}_time_of_use_1_sell
-    {% elif profile == 'sun12k' %} switch.{{ prefix }}_time_of_use_1_sell
-    {% else %} switch.{{ prefix }}_time_of_use_1_sell
-    {% endif %}
-  tou_2_sell: >
-    {% if profile == 'oze4home' %} switch.{{ prefix }}_time_of_use_2_sell
-    {% elif profile == 'dashboard' %} switch.{{ prefix }}_time_of_use_2_sell
-    {% elif profile == 'sun12k' %} switch.{{ prefix }}_time_of_use_2_sell
-    {% else %} switch.{{ prefix }}_time_of_use_2_sell
-    {% endif %}
-  tou_3_sell: >
-    {% if profile == 'oze4home' %} switch.{{ prefix }}_time_of_use_3_sell
-    {% elif profile == 'dashboard' %} switch.{{ prefix }}_time_of_use_3_sell
-    {% elif profile == 'sun12k' %} switch.{{ prefix }}_time_of_use_3_sell
-    {% else %} switch.{{ prefix }}_time_of_use_3_sell
-    {% endif %}
-  tou_4_sell: >
-    {% if profile == 'oze4home' %} switch.{{ prefix }}_time_of_use_4_sell
-    {% elif profile == 'dashboard' %} switch.{{ prefix }}_time_of_use_4_sell
-    {% elif profile == 'sun12k' %} switch.{{ prefix }}_time_of_use_4_sell
-    {% else %} switch.{{ prefix }}_time_of_use_4_sell
-    {% endif %}
-  tou_5_sell: >
-    {% if profile == 'oze4home' %} switch.{{ prefix }}_time_of_use_5_sell
-    {% elif profile == 'dashboard' %} switch.{{ prefix }}_time_of_use_5_sell
-    {% elif profile == 'sun12k' %} switch.{{ prefix }}_time_of_use_5_sell
-    {% else %} switch.{{ prefix }}_time_of_use_5_sell
-    {% endif %}
-  tou_6_sell: >
-    {% if profile == 'oze4home' %} switch.{{ prefix }}_time_of_use_6_sell
-    {% elif profile == 'dashboard' %} switch.{{ prefix }}_time_of_use_6_sell
-    {% elif profile == 'sun12k' %} switch.{{ prefix }}_time_of_use_6_sell
-    {% else %} switch.{{ prefix }}_time_of_use_6_sell
-    {% endif %}
-
-  # ==========================================================
-  # RDZEŃ OBLICZENIOWY I LOGIKA
-  # ==========================================================
-  
-  # Odczyty bazy
+  # --- Dane Systemowe ---
   current_soc: "{{ states(battery_soc_ent) | float(0) }}"
-  pv_val: "{{ states(pv_power_ent) | float(0) }}"
-  gen_val: "{{ states(gen_power_ent) | float(0) }}"
-  total_pv: "{{ pv_val + gen_val }}"
-  
-  # Konsumpcja Domu (Load + różnica Grid-CT)
-  load_val: "{{ states(load_power_ent) | float(0) }}"
-  grid_val: "{{ states(grid_power_ent) | float(0) }}"
-  ct_val: "{{ states(ct_power_ent) | float(0) }}"
-  home_on_grid: "{{ grid_val - ct_val }}"
-  total_home_load: "{{ load_val + (home_on_grid if home_on_grid > 0 else 0) }}"
-
-  # Dane Giełdowe PSE
+  total_pv: "{{ (states(pv_power_ent)|float(0)) + (states(gen_power_ent)|float(0)) }}"
+  total_home_load: "{{ (states(load_power_ent)|float(0)) + ([0, (states(grid_power_ent)|float(0) - states(ct_power_ent)|float(0))]|max) }}"
   current_price: "{{ states('sensor.rce_pse_cena') | float(0) }}"
   is_expensive_window: "{{ states('sensor.rce_pse_konfigurowalne_najdrozsze_okno_dzisiaj') == 'on' }}"
 
-  # Twarda Matryca 12-Miesięczna (Zabezpieczenie Nocne OSD)
+  # --- Matryca Bezpieczeństwa (12 miesięcy) ---
   is_safe_time: >
-    {% set m = now().month %}
-    {% set t = now().strftime('%H:%M') %}
-    {% if m == 1 %}{{ '08:00' <= t <= '15:30' }}
-    {% elif m == 2 %}{{ '07:15' <= t <= '16:30' }}
-    {% elif m == 3 %}{{ '06:15' <= t <= '17:30' }}
-    {% elif m == 4 %}{{ '06:00' <= t <= '19:30' }}
-    {% elif m == 5 %}{{ '05:00' <= t <= '20:30' }}
-    {% elif m == 6 %}{{ '04:30' <= t <= '21:00' }}
-    {% elif m == 7 %}{{ '04:45' <= t <= '20:45' }}
-    {% elif m == 8 %}{{ '05:30' <= t <= '20:00' }}
-    {% elif m == 9 %}{{ '06:15' <= t <= '19:00' }}
-    {% elif m == 10 %}{{ '07:00' <= t <= '17:30' }}
-    {% elif m == 11 %}{{ '07:15' <= t <= '15:45' }}
-    {% elif m == 12 %}{{ '08:00' <= t <= '15:00' }}
+    {% set m, t = now().month, now().strftime('%H:%M') %}
+    {% if m==1 %}{{ '08:00'<=t<='15:30' }}{% elif m==2 %}{{ '07:15'<=t<='16:30' }}{% elif m==3 %}{{ '06:15'<=t<='17:30' }}
+    {% elif m==4 %}{{ '06:00'<=t<='19:30' }}{% elif m==5 %}{{ '05:00'<=t<='20:30' }}{% elif m==6 %}{{ '04:30'<=t<='21:00' }}
+    {% elif m==7 %}{{ '04:45'<=t<='20:45' }}{% elif m==8 %}{{ '05:30'<=t<='20:00' }}{% elif m==9 %}{{ '06:15'<=t<='19:00' }}
+    {% elif m==10 %}{{ '07:00'<=t<='17:30' }}{% elif m==11 %}{{ '07:15'<=t<='15:45' }}{% elif m==12 %}{{ '08:00'<=t<='15:00' }}
     {% else %}false{% endif %}
 
-  # Logika Cloud-Breaker (Symulacja zmiennych chmur na podstawie minuty)
-  # Generuje poszarpany wykres od 60% do 100% P_Max
-  cb_modulation: "{{ 0.60 + (0.40 * ((now().minute % 15) / 15)) }}"
-  cb_target: "{{ ((p_max | float) * cb_modulation) + total_home_load }}"
-
-  # Klasyczny Eksport PRO (Słońce * Mnożnik + Dom)
-  regular_target: "{{ (total_pv * (multiplier | float)) + total_home_load }}"
-
-  # Twardy Sufit dla falownika (nie przekracza Mocy Zgłoszonej + Zużycia Domu)
-  ceiling: "{{ (p_max | int) + (total_home_load | int) }}"
-
-  # -----------------------------------------------------------------
-  # DRABINKA DECYZYJNA (Wybór docelowego limitu)
-  # -----------------------------------------------------------------
+  # --- Kalkulacja Trybów ---
+  ceiling: "{{ (p_max|int) + (total_home_load|int) }}"
+  cb_mod: "{{ 0.60 + (0.40 * ((now().minute % 15) / 15)) }}"
+  
+  # Logika Cierpliwości:
+  # 1. SOC 100% -> Pełny zrzut (ceiling)
+  # 2. Najdroższe okno -> Cloud-Breaker lub Agresywny Mnożnik
+  # 3. Cena OK, ale nie szczyt -> Tylko Słońce + Dom (Oszczędzamy baterię)
   final_target: >
-    {% if is_safe_time == 'False' %}
-      0
-    {% elif current_soc >= 100 %}
-      {{ ceiling }}
-    {% elif current_price < (min_price | float) %}
-      0
-    {% elif is_expensive_window == 'True' and total_pv < 500 %}
-      {% if cb_target > ceiling %}{{ ceiling }}{% else %}{{ cb_target | int }}{% endif %}
+    {% if is_safe_time == 'False' %} 0
+    {% elif current_soc >= 100 %} {{ ceiling }}
+    {% elif current_price < (min_price|float) %} 0
+    {% elif is_expensive_window == 'True' %}
+      {% if total_pv < 500 %} {{ [ceiling, (p_max * cb_mod + total_home_load)]|min|int }}
+      {% else %} {{ [ceiling, (total_pv * multiplier + total_home_load)]|min|int }} {% endif %}
     {% else %}
-      {% if regular_target > ceiling %}{{ ceiling }}{% else %}{{ regular_target | int }}{% endif %}
+      {{ [ceiling, (total_pv + total_home_load)]|min|int }}
     {% endif %}
 
 trigger:
   - platform: time_pattern
     minutes: "/2"
-  - platform: homeassistant
-    event: start
 
 action:
-  - if:
-      - condition: template
-        value_template: >
-          {{ states(pv_power_ent) in ['unknown', 'unavailable', 'none'] or 
-             states(max_sell_ent) in ['unknown', 'unavailable', 'none'] }}
-    then:
-      - stop: "Błąd krytyczny: Brak danych z falownika."
-
   - choose:
-      # WYKONANIE: Zablokowanie eksportu (Noc LUB niska cena przy baterii <100%)
-      - conditions:
-          - condition: template
-            value_template: "{{ final_target == 0 }}"
+      - conditions: "{{ final_target == 0 }}"
         sequence:
           - action: number.set_value
-            target:
-              entity_id: "{{ max_sell_ent }}"
-            data:
-              value: 0
+            target: { entity_id: "{{ max_sell_ent }}" }
+            data: { value: 0 }
           - action: switch.turn_off
-            target:
-              entity_id: "{{ solar_sell_switch }}"
-
-      # WYKONANIE: Aktywny eksport (Cloud-Breaker, Klasyczny mnożnik lub Zrzut przy 100% SOC)
-      - conditions:
-          - condition: template
-            value_template: "{{ final_target > 0 }}"
+            target: { entity_id: "{{ solar_sell_switch }}" }
+      - conditions: "{{ final_target > 0 }}"
         sequence:
           - action: switch.turn_on
-            target:
-              entity_id: "{{ solar_sell_switch }}"
+            target: { entity_id: "{{ solar_sell_switch }}" }
           - action: number.set_value
-            target:
-              entity_id: "{{ max_sell_ent }}"
-            data:
-              value: "{{ final_target }}"
+            target: { entity_id: "{{ max_sell_ent }}" }
+            data: { value: "{{ final_target }}" }
