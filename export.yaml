@@ -1,1 +1,182 @@
+blueprint:
+  name: "IntegraSoft Shadow-PV v1.01 (Ghost Export)"
+  description: >
+    🚀 AUTOMATYKA HYBRYDOWA: IntegraSoft Shadow-PV v1.01 🚀
+    
+    HISTORIA WERSJI:
+    v1.01: Zastąpienie zewnętrznej encji słońca wbudowaną, twardą matrycą 12-miesięczną.
+           Kod w 100% niezależny od zewnętrznych usług pogodowych.
+           Dodano url repozytorium do szybkiego importu.
+    v1.00: Inicjalna logika maskowania eksportu (Efekt pustego domu).
+    
+    JAK UŻYWAĆ:
+    1. Wybierz Profil zgodny z resztą instalacji.
+    2. Wpisz Zgłoszoną Moc PV do OSD (np. 6000 W).
+    3. Ustal Mnożnik Agresywności (np. 1.5 dopompuje +50% z magazynu).
+  
+  source_url: https://github.com/zxvxv/export/blob/main/export.yaml
+  
+  domain: automation
+  input:
+    # ==========================================
+    # 1. KONFIGURACJA GŁÓWNA
+    # ==========================================
+    in_dev_prefix:
+      name: "1. 🔹 Prefiks Urządzenia"
+      default: "deye_inverter"
 
+    in_standard_profile:
+      name: "2. 📚 Standard Integracji (Profil)"
+      default: "lewa_reka"
+      selector:
+        select:
+          options:
+            - { label: "Lewa-Reka (Domyślny)", value: "lewa_reka" }
+            - { label: "OZE4HOME (ESP32)", value: "oze4home" }
+            - { label: "Dashboard / Sunsynk", value: "dashboard" }
+            - { label: "SUN-12K (Local/Time) - Solarman", value: "sun12k" }
+
+    # ==========================================
+    # 2. PARAMETRY SHADOW-PV (GHOST EXPORT)
+    # ==========================================
+    in_p_max:
+      name: "3. 🔴 Zgłoszona moc instalacji PV (Waty)"
+      description: "Twardy sufit. System nigdy nie wypchnie do sieci więcej niż ta wartość, bez względu na słońce i ustawienia."
+      default: 6000
+      selector: { number: { min: 1000, max: 50000, mode: box, unit_of_measurement: "W" } }
+
+    in_multiplier:
+      name: "4. 🚀 Mnożnik Agresywności (Ghost Factor)"
+      description: "Jak bardzo podbijamy produkcję? (np. 1.5 = symulacja słońca o 50% mocniejszego. Magazyn dopłaca resztę)."
+      default: 1.5
+      selector: { number: { min: 1.0, max: 5.0, step: 0.1 } }
+
+mode: restart
+
+variables:
+  # Konfiguracja bazowa
+  raw_prefix: !input in_dev_prefix
+  prefix: "{{ raw_prefix | lower }}"
+  profile: !input in_standard_profile
+  
+  # Parametry aplikacji
+  p_max: !input in_p_max
+  multiplier: !input in_multiplier
+  
+  # ==========================================================
+  # BEZPOŚREDNIE MAPOWANIE ENCJI (PEŁNY FORMAT DLA 4 PROFILI)
+  # ==========================================================
+  
+  # Archiwum encji "Lewa Ręka":
+  # - Aktualne PV: sensor.deye_inverter_pv_power
+  # - Max Sell: number.deye_inverter_max_sell_power
+  # - Switch Sell: switch.deye_inverter_solar_sell
+
+  pv_power_ent: >
+    {% if profile == 'oze4home' %} sensor.{{ prefix }}_pv_power
+    {% elif profile == 'dashboard' %} sensor.{{ prefix }}_pv_power
+    {% elif profile == 'sun12k' %} sensor.{{ prefix }}_dc_power_total
+    {% else %} sensor.{{ prefix }}_pv_power
+    {% endif %}
+
+  max_sell_ent: >
+    {% if profile == 'oze4home' %} number.{{ prefix }}_max_sell_power
+    {% elif profile == 'dashboard' %} number.{{ prefix }}_max_sell_power
+    {% elif profile == 'sun12k' %} number.{{ prefix }}_max_sell_power
+    {% else %} number.{{ prefix }}_max_sell_power
+    {% endif %}
+
+  solar_sell_switch: >
+    {% if profile == 'oze4home' %} switch.{{ prefix }}_solar_sell
+    {% elif profile == 'dashboard' %} switch.{{ prefix }}_solar_sell
+    {% elif profile == 'sun12k' %} switch.{{ prefix }}_solar_sell
+    {% else %} switch.{{ prefix }}_solar_sell
+    {% endif %}
+
+  # ==========================================================
+  # MATEMATYKA GHOST-EXPORT I TWARDA BAZA GODZINOWA OSD
+  # ==========================================================
+  
+  # 1. Odczyt produkcji PV
+  current_pv: "{{ states(pv_power_ent) | float(0) }}"
+  
+  # 2. Twarda matryca godzinowa (Bezpiecznik Astronomiczny OSD)
+  is_safe_time: >
+    {% set m = now().month %}
+    {% set t = now().strftime('%H:%M') %}
+    {% if m == 1 %}{{ '08:00' <= t <= '15:30' }}
+    {% elif m == 2 %}{{ '07:15' <= t <= '16:30' }}
+    {% elif m == 3 %}{{ '06:15' <= t <= '17:30' }}
+    {% elif m == 4 %}{{ '06:00' <= t <= '19:30' }}
+    {% elif m == 5 %}{{ '05:00' <= t <= '20:30' }}
+    {% elif m == 6 %}{{ '04:30' <= t <= '21:00' }}
+    {% elif m == 7 %}{{ '04:45' <= t <= '20:45' }}
+    {% elif m == 8 %}{{ '05:30' <= t <= '20:00' }}
+    {% elif m == 9 %}{{ '06:15' <= t <= '19:00' }}
+    {% elif m == 10 %}{{ '07:00' <= t <= '17:30' }}
+    {% elif m == 11 %}{{ '07:15' <= t <= '15:45' }}
+    {% elif m == 12 %}{{ '08:00' <= t <= '15:00' }}
+    {% else %}false{% endif %}
+  
+  # 3. Wyliczenie teoretyczne (aktualne słońce * mnożnik sztucznego słońca)
+  calculated_target: "{{ (current_pv * (multiplier | float)) | int }}"
+  
+  # 4. Zastosowanie "szklanego sufitu" (P_MAX zgłoszone do energetyki)
+  final_target: >
+    {% if calculated_target > (p_max | int) %}
+      {{ p_max | int }}
+    {% else %}
+      {{ calculated_target }}
+    {% endif %}
+
+trigger:
+  # 1. HEARTBEAT (Bicie Serca i Wygładzanie) - co 2 minuty podąża za zmianą nasłonecznienia
+  - platform: time_pattern
+    minutes: "/2"
+  # 2. Bezpieczny start po restarcie HA
+  - platform: homeassistant
+    event: start
+
+action:
+  # 0. OCHRONA (Safety Check)
+  - if:
+      - condition: template
+        value_template: >
+          {{ states(pv_power_ent) in ['unknown', 'unavailable', 'none'] or 
+             states(max_sell_ent) in ['unknown', 'unavailable', 'none'] }}
+    then:
+      - stop: "Błąd krytyczny: Brak encji PV lub Max Sell. Automatyzacja Shadow-PV zatrzymana."
+
+  # GŁÓWNA LOGIKA DECYZYJNA SHADOW-PV
+  - choose:
+      # SCENARIUSZ 1: Jesteśmy w bezpiecznym oknie czasowym i mamy realną produkcję z PV (>100W)
+      - conditions:
+          - condition: template
+            value_template: "{{ is_safe_time == 'True' and current_pv > 100 }}"
+        sequence:
+          # A: Włącz pozwolenie na sprzedaż, jeśli było wyłączone
+          - action: switch.turn_on
+            target:
+              entity_id: "{{ solar_sell_switch }}"
+          
+          # B: Ustaw dynamicznie wyliczony limit eksportu
+          - action: number.set_value
+            target:
+              entity_id: "{{ max_sell_ent }}"
+            data:
+              value: "{{ final_target }}"
+
+      # SCENARIUSZ 2: Poza bezpiecznym oknem czasowym LUB brak realnej produkcji słońca
+      - conditions:
+          - condition: template
+            value_template: "{{ is_safe_time == 'False' or current_pv <= 100 }}"
+        sequence:
+          # Zabezpieczenie zerowe - wyłączamy sprzedaż i zerujemy licznik Max Sell
+          - action: number.set_value
+            target:
+              entity_id: "{{ max_sell_ent }}"
+            data:
+              value: 0
+          - action: switch.turn_off
+            target:
+              entity_id: "{{ solar_sell_switch }}"
