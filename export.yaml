@@ -1,8 +1,9 @@
 blueprint:
-  name: "IntegraSoft Shadow-PV PRO v2.05 (Smart-Cierpliwość)"
+  name: "IntegraSoft Shadow-PV PRO v2.06 (Alpha Ready)"
   description: >
-    🚀 AUTOMATYKA HYBRYDOWA: IntegraSoft Shadow-PV PRO v2.05 🚀
+    🚀 AUTOMATYKA HYBRYDOWA: IntegraSoft Shadow-PV PRO v2.06 🚀
     
+    v2.06: Zintegrowano Mózg Alpha. Zmiana encji cenowych i okien na nowe sensory Alpha.
     v2.05: Dodano logikę "Cierpliwego Sprzedawcy". 
            System oszczędza baterię na najdroższe okno PSE.
            Poza szczytem sprzedaje tylko nadwyżki ze słońca (bez drenażu magazynu).
@@ -62,8 +63,10 @@ variables:
   current_soc: "{{ states(battery_soc_ent) | float(0) }}"
   total_pv: "{{ (states(pv_power_ent)|float(0)) + (states(gen_power_ent)|float(0)) }}"
   total_home_load: "{{ (states(load_power_ent)|float(0)) + ([0, (states(grid_power_ent)|float(0) - states(ct_power_ent)|float(0))]|max) }}"
-  current_price: "{{ states('sensor.rce_pse_cena') | float(0) }}"
-  is_expensive_window: "{{ states('sensor.rce_pse_konfigurowalne_najdrozsze_okno_dzisiaj') == 'on' }}"
+  
+  # --- ZMIANY v2.06: Podpięcie Mózgu Alpha ---
+  current_price: "{{ states('sensor.alpha_aktualna_cena_rce') | float(0) }}"
+  is_expensive_window: "{{ states('sensor.alpha_plan_sprzedazy_5') == 'Sprzedaż' }}"
 
   # --- Matryca Bezpieczeństwa (12 miesięcy) ---
   is_safe_time: >
