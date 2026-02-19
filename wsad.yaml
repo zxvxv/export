@@ -1,0 +1,106 @@
+# =============================================================
+# ALPHA STANDALONE: WKŁADKA KLIENCKA (MINIMAL)
+# Niezbędne minimum do działania Blueprintu IntegraSoft Shadow-PV
+# =============================================================
+
+# 1. POMOCNIKI (Konfiguracja opłacalności dla klienta)
+input_number:
+  alpha_koszt_zakupu:
+    name: "Alpha: Koszt Zakupu (Brutto)"
+    min: 0
+    max: 2
+    step: 0.01
+    unit_of_measurement: "zł"
+
+  alpha_zysk_minimalny:
+    name: "Alpha: Zysk Minimalny"
+    min: 0
+    max: 1
+    step: 0.01
+    unit_of_measurement: "zł"
+
+  alpha_rezerwa_soc:
+    name: "Alpha: Rezerwa SOC"
+    min: 0
+    max: 100
+    step: 5
+    unit_of_measurement: "%"
+
+  alpha_pojemnosc_magazynu:
+    name: "Alpha: Pojemność Baterii"
+    min: 0
+    max: 200
+    step: 1
+    unit_of_measurement: "kWh"
+
+# 2. POBIERANIE DANYCH GIEŁDOWYCH (PSE)
+command_line:
+  - sensor:
+      name: "Alpha PSE Dzisiaj"
+      unique_id: alpha_pse_dzisiaj_client
+      command: >
+        curl -s "https://api.raporty.pse.pl/api/rce-pln?%24filter=business_date%20eq%20'$(date +%Y-%m-%d)'" | jq '{value: [.value[]? | {dtime: .dtime, rce_pln: .rce_pln}]}'
+      value_template: "{{ value_json.value | length if value_json is defined else 0 }}"
+      json_attributes: [value]
+      scan_interval: 3600
+
+# 3. MÓZG ALPHA (Logika dla Blueprintu)
+template:
+  - sensor:
+      - name: "Alpha Aktualna Cena RCE"
+        unique_id: alpha_cena_rce_aktualna_client
+        unit_of_measurement: "zł/kWh"
+        state: >
+          {% set price = state_attr('sensor.alpha_pse_dzisiaj', 'value') %}
+          {% if price %}
+            {% set now_ts = as_timestamp(now()) %}
+            {% set ns = namespace(p=0) %}
+            {% for p in price %}
+              {% set p_ts = as_timestamp(strptime(p.dtime, '%Y-%m-%d %H:%M:%S', now())) %}
+              {% if p_ts <= now_ts and (p_ts + 900) > now_ts %}
+                {% set ns.p = p.rce_pln %}
+              {% endif %}
+            {% endfor %}
+            {{ (ns.p / 1000) | round(4) }}
+          {% else %} 0.00 {% endif %}
+
+      - name: "Alpha Plan Sprzedaży"
+        unique_id: alpha_plan_sprzedazy_client
+        icon: mdi:strategy
+        state: >
+          {% set prices = state_attr('sensor.alpha_pse_dzisiaj', 'value') %}
+          {% set soc = states('sensor.deye_inverter_battery_bms_soc') | float(0) %}
+          {% set rezerwa = states('input_number.alpha_rezerwa_soc') | float(30) %}
+          {% set pojemnosc = states('input_number.alpha_pojemnosc_magazynu') | float(45) %}
+          {% set zysk = states('input_number.alpha_zysk_minimalny') | float(0) %}
+          {% set koszt = states('input_number.alpha_koszt_zakupu') | float(0) %}
+          {% set prog = (koszt + zysk) * 1000 %}
+          
+          {% if not prices %} Oczekiwanie
+          {% elif soc <= rezerwa %} Bateria < Rezerwa
+          {% else %}
+            {% set h = now().hour %}
+            {% set now_ts = as_timestamp(now()) %}
+            {% set ns = namespace(active=[]) %}
+            {% for p in prices %}
+              {% set p_ts = as_timestamp(strptime(p.dtime, '%Y-%m-%d %H:%M:%S', now())) %}
+              {% if p_ts > (now_ts - 900) %}
+                {% if h < 13 and p_ts < as_timestamp(today_at('13:01')) %}
+                  {% set ns.active = ns.active + [p] %}
+                {% elif h >= 15 %}
+                  {% set ns.active = ns.active + [p] %}
+                {% endif %}
+              {% endif %}
+            {% endfor %}
+            
+            {% if ns.active | length > 0 %}
+              {% set bloki = (((soc - rezerwa) / 100 * pojemnosc / 8.0) * 4) | round(0, 'ceil') | int %}
+              {% set top = ns.active | selectattr('rce_pln', '>=', prog) | sort(attribute='rce_pln', reverse=true) | list %}
+              {% set ns_match = namespace(ok=false) %}
+              {% for b in top[:[bloki, 1]|max] %}
+                {% set b_ts = as_timestamp(strptime(b.dtime, '%Y-%m-%d %H:%M:%S', now())) %}
+                {% if now_ts >= b_ts and now_ts < (b_ts + 900) %} {% set ns_match.ok = true %} {% endif %}
+              {% endfor %}
+              {{ 'Sprzedaż' if ns_match.ok else 'Oczekiwanie' }}
+            {% else %} Oczekiwanie {% endif %}
+          {% endif %}
