@@ -1,70 +1,63 @@
 blueprint:
-  name: "IntegraSoft Shadow-PV PRO v2.06 (Alpha Ready)"
+  name: "IntegraSoft Shadow-PV PRO v2.07 (PURE LEWA RĘKA)"
   description: >
-    🚀 AUTOMATYKA HYBRYDOWA: IntegraSoft Shadow-PV PRO v2.06 🚀
+    🚀 AUTOMATYKA HYBRYDOWA: IntegraSoft Shadow-PV PRO v2.07 🚀
     
-    v2.06: Zintegrowano Mózg Alpha. Zmiana encji cenowych i okien na nowe sensory Alpha.
-    v2.05: Dodano logikę "Cierpliwego Sprzedawcy". 
-           System oszczędza baterię na najdroższe okno PSE.
-           Poza szczytem sprzedaje tylko nadwyżki ze słońca (bez drenażu magazynu).
-    v2.00: Cloud-Breaker, RCE PSE, SOC 100% Safety Valve.
-  
-  source_url: https://github.com/zxvxv/export/blob/main/export.yaml
-  
+    v2.07: TWARDY STANDARD LEWA RĘKA + "ŻELAZNA REZERWA" + ZATRZASK TOU
+           - Całkowite usunięcie innych profili (OZE, SUN, Dashboard).
+           - Wprowadzono suwak Żelaznej Rezerwy SOC.
+           - Logika atomowa: Na czas sprzedaży automatyka wyłącza Time of Use w falowniku (switch.time_of_use), omijając okienka. Po zakończeniu sprzedaży, TOU wraca na ON, a moc sprzedaży na 0.
+    v2.06: Zintegrowano Mózg Alpha.
   domain: automation
   input:
     in_dev_prefix:
       name: "1. 🔹 Prefiks Urządzenia"
       default: "deye_inverter"
-    in_standard_profile:
-      name: "2. 📚 Standard Integracji (Profil)"
-      default: "lewa_reka"
-      selector:
-        select:
-          options:
-            - { label: "Lewa-Reka", value: "lewa_reka" }
-            - { label: "OZE4HOME", value: "oze4home" }
-            - { label: "Dashboard", value: "dashboard" }
-            - { label: "SUN-12K", value: "sun12k" }
     in_p_max:
-      name: "3. 🔴 Zgłoszona moc PV (Waty)"
+      name: "2. 🔴 Zgłoszona moc PV (Waty)"
       default: 6000
       selector: { number: { min: 1000, max: 50000, mode: box } }
     in_multiplier:
-      name: "4. 🚀 Mnożnik Agresywności (Szczyt RCE)"
+      name: "3. 🚀 Mnożnik Agresywności (Szczyt RCE)"
       default: 1.50
       selector: { number: { min: 1.00, max: 2.50, step: 0.01, mode: box } }
     in_min_price:
-      name: "5. 💰 Próg opłacalności RCE (zł)"
+      name: "4. 💰 Próg opłacalności RCE (zł)"
       default: 0.20
       selector: { number: { min: -1.00, max: 5.00, step: 0.01, mode: box } }
+    in_min_soc_reserve:
+      name: "5. 🛡️ Żelazna Rezerwa SOC (%)"
+      description: "Poniżej tego progu sprzedaż z baterii jest blokowana, a Time of Use wraca do normy."
+      default: 30
+      selector: { number: { min: 10, max: 100, step: 1, mode: slider } }
 
 mode: restart
 
 variables:
   raw_prefix: !input in_dev_prefix
   prefix: "{{ raw_prefix | lower }}"
-  profile: !input in_standard_profile
   p_max: !input in_p_max
   multiplier: !input in_multiplier
   min_price: !input in_min_price
+  min_soc: !input in_min_soc_reserve
   
-  # --- Mapowanie Encji (Pełny Format) ---
-  pv_power_ent: "{% if profile == 'sun12k' %} sensor.{{ prefix }}_dc_power_total {% else %} sensor.{{ prefix }}_pv_power {% endif %}"
-  gen_power_ent: "{% if profile == 'sun12k' %} sensor.{{ prefix }}_gen_power_total {% else %} sensor.{{ prefix }}_generator_power_total {% endif %}"
+  # --- CZYSTE MAPOWANIE LEWA RĘKA ---
+  pv_power_ent: "sensor.{{ prefix }}_pv_power"
+  gen_power_ent: "sensor.{{ prefix }}_generator_power_total"
   load_power_ent: "sensor.{{ prefix }}_load_power"
   grid_power_ent: "sensor.{{ prefix }}_grid_power"
   ct_power_ent: "sensor.{{ prefix }}_external_ct_power"
   max_sell_ent: "number.{{ prefix }}_max_sell_power"
   solar_sell_switch: "switch.{{ prefix }}_solar_sell"
-  battery_soc_ent: "{% if profile == 'oze4home' %} sensor.{{ prefix }}_battery_bms_soc {% else %} sensor.{{ prefix }}_battery_soc {% endif %}"
+  battery_soc_ent: "sensor.{{ prefix }}_battery_bms_soc"
+  tou_switch_ent: "switch.{{ prefix }}_time_of_use"
 
   # --- Dane Systemowe ---
   current_soc: "{{ states(battery_soc_ent) | float(0) }}"
   total_pv: "{{ (states(pv_power_ent)|float(0)) + (states(gen_power_ent)|float(0)) }}"
   total_home_load: "{{ (states(load_power_ent)|float(0)) + ([0, (states(grid_power_ent)|float(0) - states(ct_power_ent)|float(0))]|max) }}"
   
-  # --- ZMIANY v2.06: Podpięcie Mózgu Alpha ---
+  # --- Mózg Alpha ---
   current_price: "{{ states('sensor.alpha_aktualna_cena_rce') | float(0) }}"
   is_expensive_window: "{{ states('sensor.alpha_plan_sprzedazy_5') == 'Sprzedaż' }}"
 
@@ -77,18 +70,16 @@ variables:
     {% elif m==10 %}{{ '07:00'<=t<='17:30' }}{% elif m==11 %}{{ '07:15'<=t<='15:45' }}{% elif m==12 %}{{ '08:00'<=t<='15:00' }}
     {% else %}false{% endif %}
 
-  # --- Kalkulacja Trybów ---
+  # --- Kalkulacja Celu ---
   ceiling: "{{ (p_max|int) + (total_home_load|int) }}"
   cb_mod: "{{ 0.60 + (0.40 * ((now().minute % 15) / 15)) }}"
   
-  # Logika Cierpliwości:
-  # 1. SOC 100% -> Pełny zrzut (ceiling)
-  # 2. Najdroższe okno -> Cloud-Breaker lub Agresywny Mnożnik
-  # 3. Cena OK, ale nie szczyt -> Tylko Słońce + Dom (Oszczędzamy baterię)
+  # Główna logika wyliczania mocy (uwzględnia nową rezerwę SOC)
   final_target: >
     {% if is_safe_time == 'False' %} 0
-    {% elif current_soc >= 100 %} {{ ceiling }}
     {% elif current_price < (min_price|float) %} 0
+    {% elif current_soc <= (min_soc|float) %} 0
+    {% elif current_soc >= 100 %} {{ ceiling }}
     {% elif is_expensive_window == 'True' %}
       {% if total_pv < 500 %} {{ [ceiling, (p_max * cb_mod + total_home_load)]|min|int }}
       {% else %} {{ [ceiling, (total_pv * multiplier + total_home_load)]|min|int }} {% endif %}
@@ -102,6 +93,7 @@ trigger:
 
 action:
   - choose:
+      # SCENARIUSZ 1: STOP SPRZEDAŻY (Sprzątanie i powrót TOU)
       - conditions: "{{ final_target == 0 }}"
         sequence:
           - action: number.set_value
@@ -109,10 +101,28 @@ action:
             data: { value: 0 }
           - action: switch.turn_off
             target: { entity_id: "{{ solar_sell_switch }}" }
+          - action: switch.turn_on
+            target: { entity_id: "{{ tou_switch_ent }}" }
+
+      # SCENARIUSZ 2: AKTYWNA SPRZEDAŻ (Bypass TOU)
       - conditions: "{{ final_target > 0 }}"
         sequence:
+          - action: switch.turn_off
+            target: { entity_id: "{{ tou_switch_ent }}" }
           - action: switch.turn_on
             target: { entity_id: "{{ solar_sell_switch }}" }
           - action: number.set_value
             target: { entity_id: "{{ max_sell_ent }}" }
             data: { value: "{{ final_target }}" }
+
+# =========================================================
+# ARCHIWUM ENCJI - LEWA RĘKA (Kopia Zapasowa Profilu)
+# Zgodnie z wytycznymi encje "Lewej Ręki" pozostają w archiwum.
+# - pv_power_ent: "sensor.deye_inverter_pv_power"
+# - gen_power_ent: "sensor.deye_inverter_generator_power_total"
+# - battery_soc_ent: "sensor.deye_inverter_battery_bms_soc"
+# - load_power_ent: "sensor.deye_inverter_load_power"
+# - max_sell_ent: "number.deye_inverter_max_sell_power"
+# - solar_sell_switch: "switch.deye_inverter_solar_sell"
+# - tou_switch_ent: "switch.deye_inverter_time_of_use"
+# =========================================================
